@@ -6,7 +6,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "raises"
+name = "araised"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/amirouche/raises.py"
+Homepage = "https://github.com/amirouche/araised.py"
 
 [project.scripts]
 raises = "raises:main"

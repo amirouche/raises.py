@@ -1,4 +1,4 @@
-# raises
+# araised
 
 Static analysis tool that answers: *what exceptions can this function raise?*
 
@@ -9,7 +9,7 @@ through same-module and cross-file call chains with cycle detection.
 ## Installation
 
 ```
-pip install raises
+pip install araised
 ```
 
 To install the latest development version directly from the `dev` branch:
