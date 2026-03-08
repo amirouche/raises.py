@@ -26,6 +26,8 @@ jobs:
 
       - run: uv build
 
+      - run: uv publish --token ${{ secrets.PYPI }}
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
