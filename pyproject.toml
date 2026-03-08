@@ -1,0 +1,37 @@
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "raises"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pyright",
+]
+
+[project.scripts]
+raises = "raises:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test_raises.py"]
+
+[tool.coverage.run]
+source = ["raises"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
