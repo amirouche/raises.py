@@ -13,6 +13,9 @@ dependencies = [
     "pyright",
 ]
 
+[project.urls]
+Homepage = "https://github.com/amirouche/raises.py"
+
 [project.scripts]
 raises = "raises:main"
 
