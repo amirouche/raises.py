@@ -306,3 +306,35 @@ def test_m3_dispatch_unknown_silent():
     # No exceptions from dispatch
     via_entries = [e for e in result if e.via]
     assert len(via_entries) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pyright callable inference tests — method calls resolved via receiver type
+# ---------------------------------------------------------------------------
+
+
+def test_dict_pop():
+    """dict.pop on typed variable → builtins.KeyError via pyright."""
+    result = raises.analyse('foo.test_module:dict_pop')
+    exceptions = {e.exception for e in result}
+    assert 'builtins.KeyError' in exceptions
+    matching = [e for e in result if e.exception == 'builtins.KeyError']
+    assert any(e.step == 1 and e.source == 'dict.pop' for e in matching)
+
+
+def test_list_pop():
+    """list.pop on typed variable → builtins.IndexError via pyright."""
+    result = raises.analyse('foo.test_module:list_pop')
+    exceptions = {e.exception for e in result}
+    assert 'builtins.IndexError' in exceptions
+    matching = [e for e in result if e.exception == 'builtins.IndexError']
+    assert any(e.step == 1 and e.source == 'list.pop' for e in matching)
+
+
+def test_bound_method_call():
+    """Variable holding bound method: g = c.__getitem__; g(42) → KeyError."""
+    result = raises.analyse('foo.test_module:bound_method_call')
+    exceptions = {e.exception for e in result}
+    assert 'builtins.KeyError' in exceptions
+    matching = [e for e in result if e.exception == 'builtins.KeyError']
+    assert any(e.step == 1 and e.source == 'dict.__getitem__' for e in matching)

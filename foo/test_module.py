@@ -200,3 +200,22 @@ def dispatch_wide(obj: Union[Foo, Bar, Baz, Qux]):
 def dispatch_unknown(obj):
     """M3 Test 12: unknown receiver type."""
     obj.save()
+
+
+# --- Pyright callable inference tests ---
+
+def dict_pop(data: dict, key: str):
+    """Method call: dict.pop → KeyError via pyright receiver type."""
+    return data.pop(key)
+
+
+def list_pop(items: list):
+    """Method call: list.pop → IndexError via pyright receiver type."""
+    return items.pop()
+
+
+def bound_method_call():
+    """Variable holds bound method: g = c.__getitem__; g(42) → KeyError."""
+    c = dict()
+    g = c.__getitem__
+    return g(42)

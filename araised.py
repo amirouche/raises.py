@@ -475,6 +475,28 @@ def _call_to_contract_key(call_node):
     return None
 
 
+def _resolve_simple_assignments(func_node):
+    """Collect simple variable assignments: name = obj.attr.
+
+    Returns a dict mapping variable name → (receiver_expr, attr_name, lineno).
+    Only tracks the LAST assignment to each name (simple SSA).
+    """
+    assignments = {}
+    for node in ast.walk(func_node):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Attribute)
+        ):
+            var_name = node.targets[0].id
+            receiver_expr = ast.unparse(node.value.value)
+            attr_name = node.value.attr
+            lineno = node.value.value.lineno if hasattr(node.value.value, "lineno") else node.lineno
+            assignments[var_name] = (receiver_expr, attr_name, lineno)
+    return assignments
+
+
 def _collect_type_probes(func_node):
     """Walk function body, collect nodes that need type resolution.
 
@@ -487,6 +509,8 @@ def _collect_type_probes(func_node):
         guards: frozenset of exception names handled by enclosing try/except
     """
     probes = []
+    # Resolve simple assignments for variable-held callables
+    var_assignments = _resolve_simple_assignments(func_node)
 
     def _visit(node, guard_stack):
         if isinstance(node, ast.Try):
@@ -535,24 +559,83 @@ def _collect_type_probes(func_node):
                 }
             )
 
-        # Call — open(...), next(...), int(...), json.loads(...), etc.
+        # Call — function and method calls
         if isinstance(node, ast.Call):
-            contract_key = _call_to_contract_key(node)
-            if contract_key is not None and contract_key in STDLIB_CALLABLE_CONTRACTS:
+            if isinstance(node.func, ast.Attribute):
+                # Attribute call: obj.method(...) → probe receiver type
+                # via pyright, fall back to AST-based key
+                contract_key = _call_to_contract_key(node)
                 probes.append(
                     {
                         "kind": "call",
-                        "expr": None,
+                        "expr": ast.unparse(node.func.value),
                         "line": (
-                            node.func.lineno
-                            if hasattr(node.func, "lineno")
+                            node.func.value.lineno
+                            if hasattr(node.func.value, "lineno")
                             else node.lineno
                         ),
-                        "op": None,
+                        "op": node.func.attr,
                         "callable_name": contract_key,
                         "guards": all_guards,
                     }
                 )
+            else:
+                # Bare name call: open(...), int(...), next(...), or
+                # variable-assigned callable: g = c.__getitem__; g(42)
+                contract_key = _call_to_contract_key(node)
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                    # Check if this name was assigned from an attribute access
+                    if func_name in var_assignments:
+                        recv_expr, attr_name, recv_line = var_assignments[func_name]
+                        probes.append(
+                            {
+                                "kind": "call",
+                                "expr": recv_expr,
+                                "line": recv_line,
+                                "op": attr_name,
+                                "callable_name": None,
+                                "guards": all_guards,
+                            }
+                        )
+                    else:
+                        probes.append(
+                            {
+                                "kind": "call",
+                                "expr": node.func.id,
+                                "line": (
+                                    node.func.lineno
+                                    if hasattr(node.func, "lineno")
+                                    else node.lineno
+                                ),
+                                "op": None,
+                                "callable_name": (
+                                    contract_key
+                                    if contract_key
+                                    and contract_key in STDLIB_CALLABLE_CONTRACTS
+                                    else None
+                                ),
+                                "guards": all_guards,
+                            }
+                        )
+                elif (
+                    contract_key is not None
+                    and contract_key in STDLIB_CALLABLE_CONTRACTS
+                ):
+                    probes.append(
+                        {
+                            "kind": "call",
+                            "expr": None,
+                            "line": (
+                                node.func.lineno
+                                if hasattr(node.func, "lineno")
+                                else node.lineno
+                            ),
+                            "op": None,
+                            "callable_name": contract_key,
+                            "guards": all_guards,
+                        }
+                    )
 
         for child in ast.iter_child_nodes(node):
             _visit(child, guard_stack)
@@ -569,9 +652,9 @@ def _create_probed_source(source, probes):
     Returns (modified_source, probe_line_map) where probe_line_map maps
     new line numbers (1-indexed) to probe indices.
     """
-    # Only subscript and binop probes need reveal_type
+    # Probes with an expr need reveal_type (subscript, binop, and attribute calls)
     type_probes = [
-        (i, p) for i, p in enumerate(probes) if p["kind"] in ("subscript", "binop")
+        (i, p) for i, p in enumerate(probes) if p["expr"] is not None
     ]
     if not type_probes:
         return None, {}
@@ -621,10 +704,34 @@ def _extract_base_type(type_str):
     return type_str
 
 
+def _extract_callable_from_type(type_str):
+    """Try to extract a STDLIB_CALLABLE_CONTRACTS key from a pyright type.
+
+    Handles type[X] for constructor calls: 'type[int]' → 'builtins.int'
+    Falls back to 'builtins.{name}' for simple type names.
+    Returns None if the type is a function signature or unrecognizable.
+    """
+    # type[X] — constructor call: int(...), float(...), etc.
+    m = re.match(r"^type\[(\w+)\]$", type_str)
+    if m:
+        name = m.group(1)
+        key = f"builtins.{name}"
+        if key in STDLIB_CALLABLE_CONTRACTS:
+            return key
+    # Simple name — might be a known callable
+    m = re.match(r"^(\w+)$", type_str)
+    if m:
+        name = m.group(1)
+        key = f"builtins.{name}"
+        if key in STDLIB_CALLABLE_CONTRACTS:
+            return key
+    return None
+
+
 def _run_pyright_probes(module_file, source, probes):
     """Run pyright on a probed source to resolve types.
 
-    Returns a dict mapping probe_index → base_type_name.
+    Returns a dict mapping probe_index → full pyright type string.
     """
     modified_source, probe_line_map = _create_probed_source(source, probes)
     if modified_source is None:
@@ -642,7 +749,7 @@ def _run_pyright_probes(module_file, source, probes):
             type_str = m.group(2)
             if lineno in probe_line_map:
                 probe_idx = probe_line_map[lineno]
-                probe_types[probe_idx] = _extract_base_type(type_str)
+                probe_types[probe_idx] = type_str
 
     return probe_types
 
@@ -656,15 +763,28 @@ def _step1_pyright_inference(module_path, module_file, source, func_node):
     if not probes:
         return []
 
-    # Resolve types for subscript/binop probes via pyright
+    # Resolve types for probes with expr via pyright
     probe_types = _run_pyright_probes(module_file, source, probes)
 
     guarded_entries = []  # list of (RaisesEntry, frozenset_of_handler_names)
     for i, probe in enumerate(probes):
         if probe["kind"] == "call":
             callable_name = probe["callable_name"]
+            # If AST-based key is not in contracts, try pyright-resolved type
+            if (
+                callable_name is None
+                or callable_name not in STDLIB_CALLABLE_CONTRACTS
+            ) and i in probe_types:
+                type_str = probe_types[i]
+                if probe["op"]:
+                    # Attribute call: use receiver type + method name
+                    base_type = _extract_base_type(type_str)
+                    callable_name = f"{base_type}.{probe['op']}"
+                else:
+                    # Bare name call: try to extract callable from type
+                    callable_name = _extract_callable_from_type(type_str)
         elif i in probe_types:
-            base_type = probe_types[i]
+            base_type = _extract_base_type(probe_types[i])
             callable_name = f"{base_type}.{probe['op']}"
         else:
             continue
